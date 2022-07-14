@@ -7,7 +7,6 @@
 package leveldb
 
 import (
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -350,6 +349,66 @@ func (db *DB) memCompaction() {
 	db.compTrigger(db.tcompCmdC)
 }
 
+type biIndexer struct {
+	offset, keyLen, valLen int
+	canStop, shouldStop    bool
+}
+
+type bufferedIter struct {
+	data     []byte
+	indexers []biIndexer
+	p        int
+}
+
+func (bi *bufferedIter) Reset() {
+	bi.data = bi.data[:0]
+	bi.indexers = bi.indexers[:0]
+	bi.p = -1
+}
+
+func (bi *bufferedIter) Append(k, v []byte, canStop, shouldStop bool) int {
+	bi.indexers = append(bi.indexers, biIndexer{
+		offset:     len(bi.data),
+		keyLen:     len(k),
+		valLen:     len(v),
+		canStop:    canStop,
+		shouldStop: shouldStop,
+	})
+	bi.data = append(bi.data, k...)
+	bi.data = append(bi.data, v...)
+	return len(bi.data)
+}
+
+func (bi *bufferedIter) Next() bool {
+	if bi.p+1 < len(bi.indexers) {
+		bi.p++
+		return true
+	}
+	return false
+}
+
+func (bi *bufferedIter) Key() []byte {
+	idx := &bi.indexers[bi.p]
+	return bi.data[idx.offset:][:idx.keyLen]
+}
+
+func (bi *bufferedIter) Value() []byte {
+	idx := &bi.indexers[bi.p]
+	return bi.data[idx.offset+idx.keyLen:][:idx.valLen]
+}
+
+func (bi *bufferedIter) CanStop() bool {
+	return bi.indexers[bi.p].canStop
+}
+
+func (bi *bufferedIter) ShouldStop() bool {
+	return bi.indexers[bi.p].shouldStop
+}
+
+var bufferedIterPool = sync.Pool{
+	New: func() interface{} { return &bufferedIter{} },
+}
+
 type tableCompactionBuilder struct {
 	db    *DB
 	s     *session
@@ -357,92 +416,146 @@ type tableCompactionBuilder struct {
 	rec   *sessionRecord
 	stat1 *cStatStaging
 
-	snapHasLastUkey bool
-	snapLastUkey    []byte
-	snapLastSeq     uint64
-	snapIter        int
-	snapKerrCnt     int
-	snapDropCnt     int
-
 	kerrCnt int
 	dropCnt int
 
 	minSeq    uint64
 	strict    bool
 	tableSize int
-
-	tw *tWriter
 }
 
-func (b *tableCompactionBuilder) appendKV(key, value []byte) error {
-	// Create new table if not already.
-	if b.tw == nil {
-		// Check for pause event.
-		if b.db != nil {
-			select {
-			case ch := <-b.db.tcompPauseC:
-				b.db.pauseCompaction(ch)
-			case <-b.db.closeC:
-				b.db.compactionExitTransact()
-			default:
-			}
-		}
-
-		// Create new table.
-		var err error
-		b.tw, err = b.s.tops.create(b.tableSize)
-		if err != nil {
-			return err
-		}
-	}
-
-	// Write key/value into table.
-	return b.tw.append(key, value)
-}
-
-func (b *tableCompactionBuilder) needFlush() bool {
-	return b.tw.tw.BytesLen() >= b.tableSize
-}
-
-func (b *tableCompactionBuilder) flush() error {
-	t, err := b.tw.finish()
+func (b *tableCompactionBuilder) flushTW(tw *tWriter) error {
+	t, err := tw.finish()
 	if err != nil {
 		return err
 	}
 	b.rec.addTableFile(b.c.sourceLevel+1, t)
 	b.stat1.write += t.size
-	b.s.logf("table@build created L%d@%d N·%d S·%s %q:%q", b.c.sourceLevel+1, t.fd.Num, b.tw.tw.EntriesLen(), shortenb(t.size), t.imin, t.imax)
-	b.tw = nil
+	b.s.logf("table@build created L%d@%d N·%d S·%s %q:%q", b.c.sourceLevel+1, t.fd.Num, tw.tw.EntriesLen(), shortenb(t.size), t.imin, t.imax)
 	return nil
 }
 
-func (b *tableCompactionBuilder) cleanup() error {
-	if b.tw != nil {
-		if err := b.tw.drop(); err != nil {
+func (b *tableCompactionBuilder) writeLoop(iterC <-chan *bufferedIter) (err error) {
+	twC := make(chan *tWriter, 8)
+	errC := make(chan error)
+
+	go func() {
+		errC <- b.flushLoop(twC)
+		close(errC)
+	}()
+
+	var tw *tWriter
+	defer func() {
+		close(twC)
+		//cleanup
+		if tw != nil {
+			if derr := tw.drop(); derr != nil {
+				if err == nil {
+					err = derr
+				}
+			}
+			tw = nil
+		}
+		if werr := <-errC; werr != nil {
+			if err == nil {
+				err = werr
+			}
+		}
+	}()
+
+	for iter := range iterC {
+		for iter.Next() {
+			// flush if needed
+			if tw != nil && iter.CanStop() && (iter.ShouldStop() || tw.tw.BytesLen() >= b.tableSize) {
+				select {
+				case twC <- tw:
+					tw = nil
+				case err = <-errC:
+					return err
+				}
+			}
+
+			// Create new table if not already.
+			if tw == nil {
+				// Create new table.
+				var err error
+				if tw, err = b.s.tops.create(b.tableSize); err != nil {
+					return err
+				}
+			}
+			// Write key/value into table.
+			if err := tw.append(iter.Key(), iter.Value()); err != nil {
+				return err
+			}
+		}
+		bufferedIterPool.Put(iter)
+	}
+	// Finish last table.
+	if tw != nil && !tw.empty() {
+		select {
+		case twC <- tw:
+			tw = nil
+		case err = <-errC:
 			return err
 		}
-		b.tw = nil
+	}
+	return nil
+}
+
+func (b *tableCompactionBuilder) flushLoop(twC <-chan *tWriter) (err error) {
+	defer func() {
+		for tw := range twC {
+			if derr := tw.drop(); derr != nil {
+				if err == nil {
+					err = derr
+				}
+			}
+		}
+	}()
+	for tw := range twC {
+		t, err := tw.finish()
+		if err != nil {
+			return err
+		}
+
+		b.rec.addTableFile(b.c.sourceLevel+1, t)
+		b.stat1.write += t.size
+		b.s.logf("table@build created L%d@%d N·%d S·%s %q:%q", b.c.sourceLevel+1, t.fd.Num, tw.tw.EntriesLen(), shortenb(t.size), t.imin, t.imax)
 	}
 	return nil
 }
 
 func (b *tableCompactionBuilder) run(cnt *compactionTransactCounter) (err error) {
-	snapResumed := b.snapIter > 0
-	hasLastUkey := b.snapHasLastUkey // The key might has zero length, so this is necessary.
-	lastUkey := append([]byte(nil), b.snapLastUkey...)
-	lastSeq := b.snapLastSeq
-	b.kerrCnt = b.snapKerrCnt
-	b.dropCnt = b.snapDropCnt
+	var (
+		hasLastUkey bool // The key might has zero length, so this is necessary.
+		lastUkey    []byte
+		lastSeq     uint64
+		bIter       *bufferedIter
+		iterC       = make(chan *bufferedIter, 16)
+		errC        = make(chan error)
+	)
 	// Restore compaction state.
 	b.c.restore()
 
+	go func() {
+		errC <- b.writeLoop(iterC)
+		close(errC)
+	}()
+
 	defer func() {
-		if cerr := b.cleanup(); cerr != nil {
+		close(iterC)
+		if werr := <-errC; werr != nil {
 			if err == nil {
-				err = cerr
-			} else {
-				err = fmt.Errorf("tableCompactionBuilder error: %v, cleanup error (%v)", err, cerr)
+				err = werr
 			}
+		}
+
+		// remove all added tables on error
+		if err != nil {
+			for _, at := range b.rec.addedTables {
+				b.s.stor.Remove(storage.FileDesc{Type: storage.TypeTable, Num: at.num})
+			}
+			b.rec.resetAddedTables()
 		}
 	}()
 
@@ -455,41 +568,18 @@ func (b *tableCompactionBuilder) run(cnt *compactionTransactCounter) (err error)
 		// Incr transact counter.
 		cnt.incr()
 
-		// Skip until last state.
-		if i < b.snapIter {
-			continue
-		}
-
-		resumed := false
-		if snapResumed {
-			resumed = true
-			snapResumed = false
-		}
-
 		ikey := iter.Key()
 		ukey, seq, kt, kerr := parseInternalKey(ikey)
-
+		canStop := false
+		shouldStop := false
 		if kerr == nil {
-			shouldStop := !resumed && b.c.shouldStopBefore(ikey)
+			shouldStop = b.c.shouldStopBefore(ikey)
 
 			if !hasLastUkey || b.s.icmp.uCompare(lastUkey, ukey) != 0 {
 				// First occurrence of this user key.
 
 				// Only rotate tables if ukey doesn't hop across.
-				if b.tw != nil && (shouldStop || b.needFlush()) {
-					if err := b.flush(); err != nil {
-						return err
-					}
-
-					// Creates snapshot of the state.
-					b.c.save()
-					b.snapHasLastUkey = hasLastUkey
-					b.snapLastUkey = append(b.snapLastUkey[:0], lastUkey...)
-					b.snapLastSeq = lastSeq
-					b.snapIter = i
-					b.snapKerrCnt = b.kerrCnt
-					b.snapDropCnt = b.dropCnt
-				}
+				canStop = true
 
 				hasLastUkey = true
 				lastUkey = append(lastUkey[:0], ukey...)
@@ -526,8 +616,29 @@ func (b *tableCompactionBuilder) run(cnt *compactionTransactCounter) (err error)
 			b.kerrCnt++
 		}
 
-		if err := b.appendKV(ikey, iter.Value()); err != nil {
-			return err
+		if bIter == nil {
+			bIter = bufferedIterPool.Get().(*bufferedIter)
+			bIter.Reset()
+		}
+
+		if bIter.Append(ikey, iter.Value(), canStop, shouldStop) >= b.s.o.GetBlockSize() {
+			// Check for pause event.
+			if b.db != nil {
+				select {
+				case ch := <-b.db.tcompPauseC:
+					b.db.pauseCompaction(ch)
+				case <-b.db.closeC:
+					b.db.compactionExitTransact()
+				default:
+				}
+			}
+
+			select {
+			case iterC <- bIter:
+				bIter = nil
+			case err := <-errC:
+				return err
+			}
 		}
 	}
 
@@ -535,9 +646,13 @@ func (b *tableCompactionBuilder) run(cnt *compactionTransactCounter) (err error)
 		return err
 	}
 
-	// Finish last table.
-	if b.tw != nil && !b.tw.empty() {
-		return b.flush()
+	if bIter != nil {
+		select {
+		case iterC <- bIter:
+			bIter = nil
+		case err := <-errC:
+			return err
+		}
 	}
 	return nil
 }
