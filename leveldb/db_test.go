@@ -2580,6 +2580,72 @@ func TestDB_UkeyShouldntHopAcrossTable(t *testing.T) {
 	wg.Wait()
 }
 
+func BenchmarkDB_TableCompactionBuilder(b *testing.B) {
+	gomega.RegisterTestingT(b)
+	stor := testutil.NewStorage()
+	stor.OnLog(func(log string) {})
+	stor.OnClose(func() (preserve bool, err error) { preserve = b.Failed(); return })
+	defer stor.Close()
+
+	s, err := newSession(stor, &opt.Options{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	if err := s.create(); err != nil {
+		b.Fatal(err)
+	}
+
+	defer s.close()
+
+	tableSize := s.o.GetCompactionTableSize(0)
+
+	for i := 0; i < 2; i++ {
+		tw, err := s.tops.create()
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		for k := 0; tw.tw.BytesLen() < tableSize; k++ {
+			key := []byte(fmt.Sprintf("%09d", k))
+			val := make([]byte, 100)
+
+			if err := tw.append(makeInternalKey(nil, key, uint64(10-i), keyTypeVal), val); err != nil {
+				b.Fatal(err)
+			}
+		}
+		tf, err := tw.finish()
+		if err != nil {
+			b.Fatal(err)
+		}
+		rec := &sessionRecord{}
+		rec.addTableFile(i, tf)
+		if err := s.commit(rec, false); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	v := s.version()
+	defer v.release()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		c := newCompaction(s, v, 0, append(tFiles{}, v.levels[0]...), level0Compaction)
+		builder := &tableCompactionBuilder{
+			s:         s,
+			c:         c,
+			rec:       &sessionRecord{},
+			stat1:     new(cStatStaging),
+			minSeq:    0,
+			strict:    true,
+			tableSize: tableSize,
+		}
+		if err := builder.run(new(compactionTransactCounter)); err != nil {
+			b.Fatal(err)
+		}
+		builder.revert()
+	}
+}
+
 func TestDB_TableCompactionBuilder(t *testing.T) {
 	gomega.RegisterTestingT(t)
 	stor := testutil.NewStorage()
