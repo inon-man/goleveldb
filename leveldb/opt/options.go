@@ -421,6 +421,9 @@ type Options struct {
 	//
 	// The default value is 64 MiB.
 	MaxManifestFileSize int64
+
+	// OverflowPrefix defines the key prefix of a space which is picked first in size-compaction.
+	OverflowPrefix []byte
 }
 
 func (o *Options) GetAltFilters() []filter.Filter {
@@ -689,6 +692,13 @@ func (o *Options) GetFilterBaseLg() int {
 		return DefaultFilterBaseLg
 	}
 	return o.FilterBaseLg
+}
+
+func (o *Options) GetOverflowPrefix() []byte {
+	if o == nil {
+		return nil
+	}
+	return o.OverflowPrefix
 }
 
 // ReadOptions holds the optional parameters for 'read operation'. The

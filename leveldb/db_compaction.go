@@ -7,6 +7,7 @@
 package leveldb
 
 import (
+	"bytes"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -431,6 +432,8 @@ func (b *tableCompactionBuilder) run(cnt *compactionTransactCounter) (err error)
 	hasLastUkey := b.snapHasLastUkey // The key might has zero length, so this is necessary.
 	lastUkey := append([]byte(nil), b.snapLastUkey...)
 	lastSeq := b.snapLastSeq
+	oPrefix := b.s.o.GetOverflowPrefix()
+	lastHasOPrefix := hasLastUkey && len(oPrefix) > 0 && bytes.HasPrefix(lastUkey, oPrefix)
 	b.kerrCnt = b.snapKerrCnt
 	b.dropCnt = b.snapDropCnt
 	// Restore compaction state.
@@ -475,6 +478,10 @@ func (b *tableCompactionBuilder) run(cnt *compactionTransactCounter) (err error)
 			if !hasLastUkey || b.s.icmp.uCompare(lastUkey, ukey) != 0 {
 				// First occurrence of this user key.
 
+				hasOPrefix := len(oPrefix) > 0 && bytes.HasPrefix(ukey, oPrefix)
+				if hasLastUkey && hasOPrefix != lastHasOPrefix {
+					shouldStop = true
+				}
 				// Only rotate tables if ukey doesn't hop across.
 				if b.tw != nil && (shouldStop || b.needFlush()) {
 					if err := b.flush(); err != nil {
@@ -492,6 +499,7 @@ func (b *tableCompactionBuilder) run(cnt *compactionTransactCounter) (err error)
 				}
 
 				hasLastUkey = true
+				lastHasOPrefix = hasOPrefix
 				lastUkey = append(lastUkey[:0], ukey...)
 				lastSeq = keyMaxSeq
 			}
@@ -556,7 +564,9 @@ func (db *DB) tableCompaction(c *compaction, noTrivial bool) {
 	defer c.release()
 
 	rec := &sessionRecord{}
-	rec.addCompPtr(c.sourceLevel, c.imax)
+	if !c.overflowed {
+		rec.addCompPtr(c.sourceLevel, c.imax)
+	}
 
 	if !noTrivial && c.trivial() {
 		t := c.levels[0][0]

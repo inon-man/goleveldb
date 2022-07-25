@@ -7,6 +7,7 @@
 package leveldb
 
 import (
+	"bytes"
 	"sort"
 	"sync/atomic"
 
@@ -52,6 +53,28 @@ func (s *session) flushMemdb(rec *sessionRecord, mdb *memdb.DB, maxLevel int) (i
 	return flushLevel, nil
 }
 
+func (s *session) pickTablesSorted(tables tFiles, sourceLevel int) (*tFile, bool) {
+	n := len(tables)
+	if oPrefix := s.o.GetOverflowPrefix(); len(oPrefix) > 0 {
+		if i := sort.Search(n, func(i int) bool {
+			return s.icmp.uCompare(tables[i].imin.ukey(), oPrefix) >= 0
+		}); i < n {
+			if t := tables[i]; bytes.HasPrefix(t.imin.ukey(), oPrefix) {
+				return t, true
+			}
+		}
+	}
+	if cptr := s.getCompPtr(sourceLevel); cptr != nil {
+		n := len(tables)
+		if i := sort.Search(n, func(i int) bool {
+			return s.icmp.Compare(tables[i].imax, cptr) > 0
+		}); i < n {
+			return tables[i], false
+		}
+	}
+	return tables[0], false
+}
+
 // Pick a compaction based on current state; need external synchronization.
 func (s *session) pickCompaction() *compaction {
 	v := s.version()
@@ -59,20 +82,16 @@ func (s *session) pickCompaction() *compaction {
 	var sourceLevel int
 	var t0 tFiles
 	var typ int
+	var overflowed bool
 	if v.cScore >= 1 {
 		sourceLevel = v.cLevel
-		cptr := s.getCompPtr(sourceLevel)
 		tables := v.levels[sourceLevel]
-		if cptr != nil && sourceLevel > 0 {
-			n := len(tables)
-			if i := sort.Search(n, func(i int) bool {
-				return s.icmp.Compare(tables[i].imax, cptr) > 0
-			}); i < n {
-				t0 = append(t0, tables[i])
-			}
-		}
-		if len(t0) == 0 {
-			t0 = append(t0, tables[0])
+		if sourceLevel > 0 {
+			var picked *tFile
+			picked, overflowed = s.pickTablesSorted(tables, sourceLevel)
+			t0 = tFiles{picked}
+		} else {
+			t0 = tFiles{tables[0]}
 		}
 		if sourceLevel == 0 {
 			typ = level0Compaction
@@ -91,7 +110,9 @@ func (s *session) pickCompaction() *compaction {
 		}
 	}
 
-	return newCompaction(s, v, sourceLevel, t0, typ)
+	c := newCompaction(s, v, sourceLevel, t0, typ)
+	c.overflowed = overflowed
+	return c
 }
 
 // Create compaction from given level and range; need external synchronization.
@@ -170,6 +191,8 @@ type compaction struct {
 	snapSeenKey           bool
 	snapGPOverlappedBytes int64
 	snapTPtrs             []int
+
+	overflowed bool
 }
 
 func (c *compaction) save() {
