@@ -429,6 +429,9 @@ func (p *DB) NewIterator(slice *util.Range) iterator.Iterator {
 
 // Capacity returns keys/values buffer capacity.
 func (p *DB) Capacity() int {
+	if p.cap < p.kvDataSize {
+		return p.kvDataSize
+	}
 	return p.cap
 }
 
@@ -445,7 +448,10 @@ func (p *DB) Size() int {
 func (p *DB) Free() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.cap - p.kvDataSize
+	if f := p.cap - p.kvDataSize; f > 0 {
+		return f
+	}
+	return 0
 }
 
 // Len returns the number of entries in the DB.
@@ -484,12 +490,14 @@ func (p *DB) Reset() {
 //
 // The returned DB instance is safe for concurrent use.
 func New(cmp comparer.BasicComparer, capacity int) *DB {
+	prealloc := capacity / intSize // for kv data
+	prealloc += prealloc / 2       // for skip list nodes
 	p := &DB{
 		cmp:       cmp,
 		cap:       capacity,
 		rnd:       rand.New(rand.NewSource(0xdeadbeef)),
 		maxHeight: 1,
-		nodeData:  make([]int, 4+tMaxHeight, 4+tMaxHeight+(capacity*3/2)/intSize),
+		nodeData:  make([]int, 4+tMaxHeight, 4+tMaxHeight+prealloc),
 	}
 	p.nodeData[nHeight] = tMaxHeight
 	return p
