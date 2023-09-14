@@ -32,7 +32,6 @@ func newErrBatchCorrupted(reason string) error {
 
 const (
 	batchHeaderLen = 8 + 4
-	batchGrowRec   = 3000
 	batchBufioSize = 16
 )
 
@@ -75,11 +74,7 @@ type Batch struct {
 func (b *Batch) grow(n int) {
 	o := len(b.data)
 	if cap(b.data)-o < n {
-		div := 1
-		if len(b.index) > batchGrowRec {
-			div = len(b.index) / batchGrowRec
-		}
-		ndata := make([]byte, o, o+n+o/div)
+		ndata := make([]byte, o, o+n+o)
 		copy(ndata, b.data)
 		b.data = ndata
 	}
