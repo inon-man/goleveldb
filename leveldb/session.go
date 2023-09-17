@@ -54,7 +54,7 @@ type session struct {
 
 	stCompPtrs  []internalKey // compaction pointers; need external synchronization
 	stVersion   *version      // current version
-	ntVersionId int64         // next version id to assign
+	ntVersionID int64         // next version id to assign
 	refCh       chan *vTask
 	relCh       chan *vTask
 	deltaCh     chan *vDelta
@@ -62,6 +62,8 @@ type session struct {
 	closeC      chan struct{}
 	closeW      sync.WaitGroup
 	vmu         sync.Mutex
+
+	baseManifestSize int64 // manifest file size since last build
 
 	// Testing fields
 	fileRefCh chan chan map[int64]int // channel used to pass current reference stat
@@ -107,7 +109,7 @@ func (s *session) close() {
 	}
 	s.manifest = nil
 	s.manifestWriter = nil
-	s.setVersion(nil, &version{s: s, closing: true, id: s.ntVersionId})
+	s.setVersion(nil, &version{s: s, closing: true, id: s.ntVersionID})
 
 	// Close all background goroutines
 	close(s.closeC)
@@ -171,7 +173,7 @@ func (s *session) recover() (err error) {
 		if err == nil {
 			// save compact pointers
 			for _, r := range rec.compPtrs {
-				s.setCompPtr(r.level, internalKey(r.ikey))
+				s.setCompPtr(r.level, r.ikey)
 			}
 			// commit record to version staging
 			staging.commit(rec)
@@ -207,6 +209,18 @@ func (s *session) recover() (err error) {
 	return nil
 }
 
+// shouldRebuildManifest returns whether manifest file should be rebuilt; need external synchronization.
+func (s *session) shouldRebuildManifest() bool {
+	if s.manifest == nil {
+		return false
+	}
+	size := s.manifest.Size()
+	// To throttle manifest rebuilding, check if manifest size grows enough (doubled)
+	// since last build, in addition to size limit check.
+	// See: https://github.com/syndtr/goleveldb/issues/413.
+	return size >= s.baseManifestSize*2 && size >= s.o.GetMaxManifestFileSize()
+}
+
 // Commit session; need external synchronization.
 func (s *session) commit(r *sessionRecord, trivial bool) (err error) {
 	v := s.version()
@@ -226,6 +240,9 @@ func (s *session) commit(r *sessionRecord, trivial bool) (err error) {
 	if s.manifest == nil {
 		// manifest journal writer not yet created, create one
 		err = s.newManifest(r, nv)
+	} else if s.shouldRebuildManifest() {
+		// pass nil sessionRecord to avoid over-reference table file
+		err = s.newManifest(nil, nv)
 	} else {
 		err = s.flushManifest(r)
 	}

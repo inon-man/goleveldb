@@ -33,6 +33,8 @@ type mergedIterator struct {
 	err      error
 	errf     func(err error)
 	releaser util.Releaser
+
+	heap indexHeap
 }
 
 func assertKey(key []byte) []byte {
@@ -67,16 +69,19 @@ func (i *mergedIterator) First() bool {
 		return false
 	}
 
+	i.heap.Reset()
 	for x, iter := range i.iters {
 		switch {
 		case iter.First():
 			i.keys[x] = assertKey(iter.Key())
+			i.heap.Add(x)
 		case i.iterErr(iter):
 			return false
 		default:
 			i.keys[x] = nil
 		}
 	}
+	i.heap.Init(false)
 	i.dir = dirSOI
 	return i.next()
 }
@@ -89,16 +94,19 @@ func (i *mergedIterator) Last() bool {
 		return false
 	}
 
+	i.heap.Reset()
 	for x, iter := range i.iters {
 		switch {
 		case iter.Last():
 			i.keys[x] = assertKey(iter.Key())
+			i.heap.Add(x)
 		case i.iterErr(iter):
 			return false
 		default:
 			i.keys[x] = nil
 		}
 	}
+	i.heap.Init(true)
 	i.dir = dirEOI
 	return i.prev()
 }
@@ -111,35 +119,29 @@ func (i *mergedIterator) Seek(key []byte) bool {
 		return false
 	}
 
+	i.heap.Reset()
 	for x, iter := range i.iters {
 		switch {
 		case iter.Seek(key):
 			i.keys[x] = assertKey(iter.Key())
+			i.heap.Add(x)
 		case i.iterErr(iter):
 			return false
 		default:
 			i.keys[x] = nil
 		}
 	}
+	i.heap.Init(false)
 	i.dir = dirSOI
 	return i.next()
 }
 
 func (i *mergedIterator) next() bool {
-	var key []byte
-	if i.dir == dirForward {
-		key = i.keys[i.index]
-	}
-	for x, tkey := range i.keys {
-		if tkey != nil && (key == nil || i.cmp.Compare(tkey, key) < 0) {
-			key = tkey
-			i.index = x
-		}
-	}
-	if key == nil {
+	if i.heap.Empty() {
 		i.dir = dirEOI
 		return false
 	}
+	i.index = i.heap.Top()
 	i.dir = dirForward
 	return true
 }
@@ -156,7 +158,7 @@ func (i *mergedIterator) Next() bool {
 	case dirSOI:
 		return i.First()
 	case dirBackward:
-		key := append([]byte{}, i.keys[i.index]...)
+		key := append([]byte(nil), i.keys[i.index]...)
 		if !i.Seek(key) {
 			return false
 		}
@@ -168,29 +170,22 @@ func (i *mergedIterator) Next() bool {
 	switch {
 	case iter.Next():
 		i.keys[x] = assertKey(iter.Key())
+		i.heap.FixTopWith(x)
 	case i.iterErr(iter):
 		return false
 	default:
 		i.keys[x] = nil
+		i.heap.Pop()
 	}
 	return i.next()
 }
 
 func (i *mergedIterator) prev() bool {
-	var key []byte
-	if i.dir == dirBackward {
-		key = i.keys[i.index]
-	}
-	for x, tkey := range i.keys {
-		if tkey != nil && (key == nil || i.cmp.Compare(tkey, key) > 0) {
-			key = tkey
-			i.index = x
-		}
-	}
-	if key == nil {
+	if i.heap.Empty() {
 		i.dir = dirSOI
 		return false
 	}
+	i.index = i.heap.Top()
 	i.dir = dirBackward
 	return true
 }
@@ -207,21 +202,24 @@ func (i *mergedIterator) Prev() bool {
 	case dirEOI:
 		return i.Last()
 	case dirForward:
-		key := append([]byte{}, i.keys[i.index]...)
+		i.heap.Reset()
 		for x, iter := range i.iters {
 			if x == i.index {
+				i.heap.Add(x)
 				continue
 			}
-			seek := iter.Seek(key)
+			seek := iter.Seek(i.keys[i.index])
 			switch {
 			case seek && iter.Prev(), !seek && iter.Last():
 				i.keys[x] = assertKey(iter.Key())
+				i.heap.Add(x)
 			case i.iterErr(iter):
 				return false
 			default:
 				i.keys[x] = nil
 			}
 		}
+		i.heap.Init(true)
 	}
 
 	x := i.index
@@ -229,10 +227,12 @@ func (i *mergedIterator) Prev() bool {
 	switch {
 	case iter.Prev():
 		i.keys[x] = assertKey(iter.Key())
+		i.heap.FixTopWith(x)
 	case i.iterErr(iter):
 		return false
 	default:
 		i.keys[x] = nil
+		i.heap.Pop()
 	}
 	return i.prev()
 }
@@ -259,6 +259,8 @@ func (i *mergedIterator) Release() {
 		}
 		i.iters = nil
 		i.keys = nil
+		i.heap.indexes = nil
+		i.heap.keys = nil
 		if i.releaser != nil {
 			i.releaser.Release()
 			i.releaser = nil
@@ -295,10 +297,94 @@ func (i *mergedIterator) SetErrorCallback(f func(err error)) {
 // won't be ignored and will halt 'merged iterator', otherwise the iterator will
 // continue to the next 'input iterator'.
 func NewMergedIterator(iters []Iterator, cmp comparer.Comparer, strict bool) Iterator {
+	keys := make([][]byte, len(iters))
 	return &mergedIterator{
 		iters:  iters,
 		cmp:    cmp,
 		strict: strict,
-		keys:   make([][]byte, len(iters)),
+		keys:   keys,
+		heap: indexHeap{
+			indexes: make([]int, 0, len(iters)),
+			keys:    keys,
+			cmp:     cmp,
+		},
 	}
+}
+
+// indexHeap provides heap operations for indexes.
+// It specializes 'heap' with int element type.
+type indexHeap struct {
+	indexes []int
+	keys    [][]byte
+	cmp     comparer.Comparer
+	reverse bool
+}
+
+func (h *indexHeap) Init(reverse bool) {
+	h.reverse = reverse
+	// heapify
+	n := len(h.indexes)
+	for i := n/2 - 1; i >= 0; i-- {
+		h.down(i, n)
+	}
+}
+
+func (h *indexHeap) Reset() {
+	h.indexes = h.indexes[:0]
+}
+
+func (h *indexHeap) Add(x int) {
+	h.indexes = append(h.indexes, x)
+}
+
+func (h *indexHeap) Empty() bool { return len(h.indexes) == 0 }
+func (h *indexHeap) Top() int    { return h.indexes[0] }
+
+func (h *indexHeap) Pop() int {
+	top := h.indexes[0]
+	n := len(h.indexes) - 1
+	h.swap(0, n)
+	h.down(0, n)
+	h.indexes = h.indexes[:n]
+	return top
+}
+
+func (h *indexHeap) FixTopWith(x int) {
+	// replace top
+	h.indexes[0] = x
+	// and then fix
+	h.down(0, len(h.indexes))
+}
+
+func (h *indexHeap) down(i0, n int) bool {
+	i := i0
+	for {
+		j1 := 2*i + 1
+		if j1 >= n || j1 < 0 { // j1 < 0 after int overflow
+			break
+		}
+		j := j1 // left child
+		if j2 := j1 + 1; j2 < n && h.less(j2, j1) {
+			j = j2 // = 2*i + 2  // right child
+		}
+		if !h.less(j, i) {
+			break
+		}
+		h.swap(i, j)
+		i = j
+	}
+	return i > i0
+}
+
+func (h *indexHeap) less(i, j int) bool {
+	i, j = h.indexes[i], h.indexes[j]
+	r := h.cmp.Compare(h.keys[i], h.keys[j])
+	if h.reverse {
+		return r > 0
+	}
+	return r < 0
+}
+
+func (h *indexHeap) swap(i, j int) {
+	h.indexes[i], h.indexes[j] = h.indexes[j], h.indexes[i]
 }

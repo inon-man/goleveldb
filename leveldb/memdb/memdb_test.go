@@ -19,10 +19,9 @@ import (
 func (p *DB) TestFindLT(key []byte) (rkey, value []byte, err error) {
 	p.mu.RLock()
 	if node := p.findLT(key); node != 0 {
-		n := p.nodeData[node]
-		m := n + p.nodeData[node+nKey]
-		rkey = p.kvData[n:m]
-		value = p.kvData[m : m+p.nodeData[node+nVal]]
+		kv := p.kvSlice(p.nodeData[node])
+		rkey = kv[:p.nodeData[node+nKey]]
+		value = kv[p.nodeData[node+nKey]:][:p.nodeData[node+nVal]]
 	} else {
 		err = ErrNotFound
 	}
@@ -33,10 +32,9 @@ func (p *DB) TestFindLT(key []byte) (rkey, value []byte, err error) {
 func (p *DB) TestFindLast() (rkey, value []byte, err error) {
 	p.mu.RLock()
 	if node := p.findLast(); node != 0 {
-		n := p.nodeData[node]
-		m := n + p.nodeData[node+nKey]
-		rkey = p.kvData[n:m]
-		value = p.kvData[m : m+p.nodeData[node+nVal]]
+		kv := p.kvSlice(p.nodeData[node])
+		rkey = kv[:p.nodeData[node+nKey]]
+		value = kv[p.nodeData[node+nKey]:][:p.nodeData[node+nVal]]
 	} else {
 		err = ErrNotFound
 	}
@@ -45,13 +43,11 @@ func (p *DB) TestFindLast() (rkey, value []byte, err error) {
 }
 
 func (p *DB) TestPut(key []byte, value []byte) error {
-	p.Put(key, value)
-	return nil
+	return p.Put(key, value)
 }
 
 func (p *DB) TestDelete(key []byte) error {
-	p.Delete(key)
-	return nil
+	return p.Delete(key)
 }
 
 func (p *DB) TestFind(key []byte) (rkey, rvalue []byte, err error) {
@@ -94,7 +90,7 @@ var _ = testutil.Defer(func() {
 				// Building the DB.
 				db := New(comparer.DefaultComparer, 0)
 				kv.IterateShuffled(nil, func(i int, key, value []byte) {
-					db.Put(key, value)
+					Expect(db.Put(key, value)).ShouldNot(HaveOccurred())
 				})
 
 				if kv.Len() > 1 {
