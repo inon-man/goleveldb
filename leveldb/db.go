@@ -407,7 +407,7 @@ func recoverTable(s *session, o *opt.Options) error {
 				tSeq = seq
 			}
 			if imin == nil {
-				imin = append([]byte(nil), key...)
+				imin = append([]byte{}, key...)
 			}
 			imax = append(imax[:0], key...)
 		}
@@ -783,7 +783,7 @@ func (db *DB) get(auxm *memdb.DB, auxt tFiles, key []byte, seq uint64, ro *opt.R
 
 	if auxm != nil {
 		if ok, mv, me := memGet(auxm, ikey, db.s.icmp); ok {
-			return append([]byte(nil), mv...), me
+			return append([]byte{}, mv...), me
 		}
 	}
 
@@ -795,7 +795,7 @@ func (db *DB) get(auxm *memdb.DB, auxt tFiles, key []byte, seq uint64, ro *opt.R
 		defer m.decref()
 
 		if ok, mv, me := memGet(m.DB, ikey, db.s.icmp); ok {
-			return append([]byte(nil), mv...), me
+			return append([]byte{}, mv...), me
 		}
 	}
 
