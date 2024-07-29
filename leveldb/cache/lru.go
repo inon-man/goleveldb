@@ -40,8 +40,8 @@ func (n *lruNode) remove() {
 
 type lru struct {
 	mu       sync.Mutex
-	capacity int
-	used     int
+	capacity int64
+	used     int64
 	recent   lruNode
 }
 
@@ -51,13 +51,13 @@ func (r *lru) reset() {
 	r.used = 0
 }
 
-func (r *lru) Capacity() int {
+func (r *lru) Capacity() int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.capacity
 }
 
-func (r *lru) SetCapacity(capacity int) {
+func (r *lru) SetCapacity(capacity int64) {
 	var evicted []*lruNode
 
 	r.mu.Lock()
@@ -69,7 +69,7 @@ func (r *lru) SetCapacity(capacity int) {
 		}
 		rn.remove()
 		rn.n.CacheData = nil
-		r.used -= rn.n.Size()
+		r.used -= int64(rn.n.Size())
 		evicted = append(evicted, rn)
 	}
 	r.mu.Unlock()
@@ -84,11 +84,11 @@ func (r *lru) Promote(n *Node) {
 
 	r.mu.Lock()
 	if n.CacheData == nil {
-		if n.Size() <= r.capacity {
+		if int64(n.Size()) <= r.capacity {
 			rn := &lruNode{n: n, h: n.GetHandle()}
 			rn.insert(&r.recent)
 			n.CacheData = unsafe.Pointer(rn)
-			r.used += n.Size()
+			r.used += int64(n.Size())
 
 			for r.used > r.capacity {
 				rn := r.recent.prev
@@ -97,7 +97,7 @@ func (r *lru) Promote(n *Node) {
 				}
 				rn.remove()
 				rn.n.CacheData = nil
-				r.used -= rn.n.Size()
+				r.used -= int64(rn.n.Size())
 				evicted = append(evicted, rn)
 			}
 		}
@@ -124,7 +124,7 @@ func (r *lru) Ban(n *Node) {
 		if !rn.ban {
 			rn.remove()
 			rn.ban = true
-			r.used -= rn.n.Size()
+			r.used -= int64(rn.n.Size())
 			r.mu.Unlock()
 
 			rn.h.Release()
@@ -143,7 +143,7 @@ func (r *lru) Evict(n *Node) {
 		return
 	}
 	rn.remove()
-	r.used -= n.Size()
+	r.used -= int64(n.Size())
 	n.CacheData = nil
 	r.mu.Unlock()
 
@@ -151,7 +151,7 @@ func (r *lru) Evict(n *Node) {
 }
 
 // NewLRU create a new LRU-cache.
-func NewLRU(capacity int) Cacher {
+func NewLRU(capacity int64) Cacher {
 	r := &lru{capacity: capacity}
 	r.reset()
 	return r

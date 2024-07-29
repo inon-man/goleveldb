@@ -46,21 +46,21 @@ var (
 
 // Cacher is a caching algorithm.
 type Cacher interface {
-	New(capacity int) cache.Cacher
+	New(capacity int64) cache.Cacher
 }
 
 type cacherFunc struct {
-	NewFunc func(capacity int) cache.Cacher
+	NewFunc func(capacity int64) cache.Cacher
 }
 
-func (f *cacherFunc) New(capacity int) cache.Cacher {
+func (f *cacherFunc) New(capacity int64) cache.Cacher {
 	if f != nil && f.NewFunc != nil {
 		return f.NewFunc(capacity)
 	}
 	return nil
 }
 
-func CacherFunc(f func(capacity int) cache.Cacher) Cacher {
+func CacherFunc(f func(capacity int64) cache.Cacher) Cacher {
 	return &cacherFunc{f}
 }
 
@@ -68,7 +68,7 @@ type passthroughCacher struct {
 	Cacher cache.Cacher
 }
 
-func (p *passthroughCacher) New(capacity int) cache.Cacher {
+func (p *passthroughCacher) New(capacity int64) cache.Cacher {
 	return p.Cacher
 }
 
@@ -78,22 +78,22 @@ func (p *passthroughCacher) New(capacity int) cache.Cacher {
 //
 // Shared cache example:
 //
-//     fileCache := opt.NewLRU(500)
-//     blockCache := opt.NewLRU(8 * opt.MiB)
-// 	   options := &opt.Options{
-//         OpenFilesCacher: fileCache,
-//         BlockCacher: blockCache,
-//     }
-//     db1, err1 := leveldb.OpenFile("path/to/db1", options)
-//     ...
-//     db2, err2 := leveldb.OpenFile("path/to/db2", options)
-//     ...
+//	   fileCache := opt.NewLRU(500)
+//	   blockCache := opt.NewLRU(8 * opt.MiB)
+//		   options := &opt.Options{
+//	       OpenFilesCacher: fileCache,
+//	       BlockCacher: blockCache,
+//	   }
+//	   db1, err1 := leveldb.OpenFile("path/to/db1", options)
+//	   ...
+//	   db2, err2 := leveldb.OpenFile("path/to/db2", options)
+//	   ...
 func PassthroughCacher(x cache.Cacher) Cacher {
 	return &passthroughCacher{x}
 }
 
 // NewLRU creates LRU 'passthrough cacher'.
-func NewLRU(capacity int) Cacher {
+func NewLRU(capacity int64) Cacher {
 	return PassthroughCacher(cache.NewLRU(capacity))
 }
 
@@ -192,7 +192,7 @@ type Options struct {
 	// Use -1 for zero, this has same effect as specifying NoCacher to BlockCacher.
 	//
 	// The default value is 8MiB.
-	BlockCacheCapacity int
+	BlockCacheCapacity int64
 
 	// BlockCacheEvictRemoved allows enable forced-eviction on cached block belonging
 	// to removed 'sorted table'.
@@ -440,9 +440,9 @@ func (o *Options) GetBlockCacher() Cacher {
 	return o.BlockCacher
 }
 
-func (o *Options) GetBlockCacheCapacity() int {
+func (o *Options) GetBlockCacheCapacity() int64 {
 	if o == nil || o.BlockCacheCapacity == 0 {
-		return DefaultBlockCacheCapacity
+		return int64(DefaultBlockCacheCapacity)
 	} else if o.BlockCacheCapacity < 0 {
 		return 0
 	}

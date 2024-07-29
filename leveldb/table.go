@@ -505,7 +505,7 @@ func newTableOps(s *session) *tOps {
 		blockBuffer *util.BufferPool
 	)
 	if s.o.GetOpenFilesCacheCapacity() > 0 {
-		fileCacher = s.o.GetOpenFilesCacher().New(s.o.GetOpenFilesCacheCapacity())
+		fileCacher = s.o.GetOpenFilesCacher().New(int64(s.o.GetOpenFilesCacheCapacity()))
 	}
 	if !s.o.GetDisableBlockCache() {
 		var blockCacher cache.Cacher

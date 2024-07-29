@@ -20,10 +20,10 @@ import (
 // An implementation must be safe for concurrent use.
 type Cacher interface {
 	// Capacity returns cache capacity.
-	Capacity() int
+	Capacity() int64
 
 	// SetCapacity sets cache capacity.
-	SetCapacity(capacity int)
+	SetCapacity(capacity int64)
 
 	// Promote promotes the 'cache node'.
 	Promote(n *Node)
@@ -188,7 +188,7 @@ func (b *mBucket) get(r *Cache, h *mHead, hash uint32, ns, key uint64, getOnly b
 	return true, true, n
 }
 
-func (b *mBucket) delete(r *Cache, h *mHead, hash uint32, ns, key uint64) (done, deleted bool) {
+func (b *mBucket) delete(r *Cache, h *mHead, ns, key uint64) (done, deleted bool) {
 	b.mu.Lock()
 
 	if b.frozen() {
@@ -414,7 +414,7 @@ func (r *Cache) enumerateNodesByNS(ns uint64) []*Node {
 func (r *Cache) delete(n *Node) bool {
 	for {
 		h, b := r.getBucket(n.hash)
-		done, deleted := b.delete(r, h, n.hash, n.ns, n.key)
+		done, deleted := b.delete(r, h, n.ns, n.key)
 		if done {
 			return deleted
 		}
@@ -437,17 +437,17 @@ func (r *Cache) GetStats() Stats {
 }
 
 // Nodes returns number of 'cache node' in the map.
-func (r *Cache) Nodes() int {
-	return int(atomic.LoadInt64(&r.statNodes))
+func (r *Cache) Nodes() int64 {
+	return atomic.LoadInt64(&r.statNodes)
 }
 
 // Size returns sums of 'cache node' size in the map.
-func (r *Cache) Size() int {
-	return int(atomic.LoadInt64(&r.statSize))
+func (r *Cache) Size() int64 {
+	return atomic.LoadInt64(&r.statSize)
 }
 
 // Capacity returns cache capacity.
-func (r *Cache) Capacity() int {
+func (r *Cache) Capacity() int64 {
 	if r.cacher == nil {
 		return 0
 	}
@@ -455,7 +455,7 @@ func (r *Cache) Capacity() int {
 }
 
 // SetCapacity sets cache capacity.
-func (r *Cache) SetCapacity(capacity int) {
+func (r *Cache) SetCapacity(capacity int64) {
 	if r.cacher != nil {
 		r.cacher.SetCapacity(capacity)
 	}

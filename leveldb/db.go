@@ -931,6 +931,7 @@ func (db *DB) GetSnapshot() (*Snapshot, error) {
 // GetProperty returns value of the given property name.
 //
 // Property names:
+//
 //	leveldb.num-files-at-level{n}
 //		Returns the number of files at level 'n'.
 //	leveldb.stats
@@ -1052,8 +1053,8 @@ type DBStats struct {
 	IOWrite uint64
 	IORead  uint64
 
-	BlockCacheSize    int
-	OpenedTablesCount int
+	BlockCacheSize    int64
+	OpenedTablesCount int64
 
 	FileCache  cache.Stats
 	BlockCache cache.Stats

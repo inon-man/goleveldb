@@ -738,6 +738,17 @@ func (db *DB) tableCompaction(c *compaction, noTrivial bool) {
 	case seekCompaction:
 		atomic.AddUint32(&db.seekComp, 1)
 	}
+
+	cachedblock, _ := db.GetProperty("leveldb.cachedblock")
+	openedtables, _ := db.GetProperty("leveldb.openedtables")
+	alivesnaps, _ := db.GetProperty("leveldb.alivesnaps")
+	aliveiters, _ := db.GetProperty("leveldb.aliveiters")
+	blockpool, _ := db.GetProperty("leveldb.blockpool")
+	writeDelay, _ := db.GetProperty("leveldb.writedelay")
+	ioStats, _ := db.GetProperty("leveldb.iostats")
+	compCount, _ := db.GetProperty("leveldb.compcount")
+	db.logf("db@stat BlockCache=%s OpenedTables=%s AliveSnaps=%s AliveIter=%s BlockPool=%q WriteDelay=%q IOStats=%q CompCount=%q",
+		cachedblock, openedtables, alivesnaps, aliveiters, blockpool, writeDelay, ioStats, compCount)
 }
 
 func (db *DB) tableRangeCompaction(level int, umin, umax []byte) error {

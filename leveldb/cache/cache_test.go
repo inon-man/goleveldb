@@ -255,13 +255,13 @@ func TestCacheMap_NodesAndSize(t *testing.T) {
 	set(c, 0, 2, 2, 2, nil)
 	set(c, 1, 1, 3, 3, nil)
 	set(c, 2, 1, 4, 1, nil)
-	require.Equal(t, 4, c.Nodes())
-	require.Equal(t, 7, c.Size())
+	require.Equal(t, int64(4), c.Nodes())
+	require.Equal(t, int64(7), c.Size())
 }
 
 func TestLRUCache_Capacity(t *testing.T) {
 	c := NewCache(NewLRU(10))
-	require.Equal(t, 10, c.Capacity())
+	require.Equal(t, int64(10), c.Capacity())
 	set(c, 0, 1, 1, 1, nil).Release()
 	set(c, 0, 2, 2, 2, nil).Release()
 	set(c, 1, 1, 3, 3, nil).Release()
@@ -270,12 +270,12 @@ func TestLRUCache_Capacity(t *testing.T) {
 	set(c, 2, 3, 6, 1, nil).Release()
 	set(c, 2, 4, 7, 1, nil).Release()
 	set(c, 2, 5, 8, 1, nil).Release()
-	require.Equal(t, 7, c.Nodes())
-	require.Equal(t, 10, c.Size())
+	require.Equal(t, int64(7), c.Nodes())
+	require.Equal(t, int64(10), c.Size())
 	c.SetCapacity(9)
-	require.Equal(t, 9, c.Capacity())
-	require.Equal(t, 6, c.Nodes())
-	require.Equal(t, 8, c.Size())
+	require.Equal(t, int64(9), c.Capacity())
+	require.Equal(t, int64(6), c.Nodes())
+	require.Equal(t, int64(8), c.Size())
 }
 
 func TestCacheMap_NilValue(t *testing.T) {
@@ -479,11 +479,11 @@ func TestLRUCache_Evict(t *testing.T) {
 	}
 
 	require.True(t, c.Evict(0, 1))
-	require.Equal(t, 5, lru.used)
+	require.Equal(t, int64(5), lru.used)
 	require.False(t, c.Evict(0, 1))
 
 	c.EvictNS(1)
-	require.Equal(t, 3, lru.used)
+	require.Equal(t, int64(3), lru.used)
 	require.Nil(t, c.Get(1, 1, nil))
 	require.Nil(t, c.Get(1, 2, nil))
 

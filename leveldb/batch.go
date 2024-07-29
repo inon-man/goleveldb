@@ -32,7 +32,7 @@ func newErrBatchCorrupted(reason string) error {
 
 const (
 	batchHeaderLen = 8 + 4
-	batchBufioSize = 16
+	batchGrowLimit = 3000
 )
 
 // BatchReplay wraps basic batch operations.
